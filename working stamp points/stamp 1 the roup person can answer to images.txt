@@ -1,0 +1,186 @@
+#the group person can answer to both image and text 
+
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+from typing import Final
+
+# Your bot token from BotFather
+TOKEN: Final = '7538116284:AAE_FK1Ae2MvMgWj17z62sP6WV0Tjzy2fP8'
+BOT_USERNAME: Final = '@Ema_Hoy_Yelebe_bot'
+
+# Group chat IDs
+EDUCATIONAL_GROUP_ID = -4510014523  # Replace with the actual group ID
+SPIRITUAL_GROUP_ID = -4537579050  # Replace with the actual group ID
+SOCIAL_GROUP_ID = -4539397725      # Replace with the actual group ID
+
+# Dictionary to keep track of users' questions and their IDs
+user_questions = {}
+
+# Function to generate a unique identifier
+def generate_identifier():
+    import string
+    import random
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+# Start command handler
+async def start(update: Update, context: CallbackContext) -> None:
+    message = "Hello, I am Emahoy app. What can I help you with?\n\n"
+    message += "1. Educational\n"
+    message += "2. Spiritual\n"
+    message += "3. Social"
+    await update.message.reply_text(message)
+
+# Help command handler
+async def help(update: Update, context: CallbackContext) -> None:
+    message = "Hello, I am Emahoy app. Please tell me what I can help you with?\n\n"
+    message += "1. Educational\n"
+    message += "2. Spiritual\n"
+    message += "3. Social"
+    await update.message.reply_text(message)
+
+# Function to handle selection
+async def handle_selection(update: Update, context: CallbackContext) -> None:
+    text = update.message.text
+    if text == '1':
+        context.user_data['selected'] = 'educational'
+        await update.message.reply_text("You've selected Educational. Type /ask followed by your question.")
+    elif text == '2':
+        context.user_data['selected'] = 'spiritual'
+        await update.message.reply_text("You've selected Spiritual. Type /ask followed by your question.")
+    elif text == '3':
+        context.user_data['selected'] = 'social'
+        await update.message.reply_text("You've selected Social. Type /ask followed by your question.")
+    else:
+        await update.message.reply_text("Please select a valid option: 1 for Educational, 2 for Spiritual, 3 for Social.")
+
+# Ask command handler
+async def ask(update: Update, context: CallbackContext) -> None:
+    selected_category = context.user_data.get('selected')
+
+    if not selected_category:
+        await update.message.reply_text("Please select a category first by typing 1 for Educational, 2 for Spiritual, or 3 for Social.")
+        return
+
+    # Check if the user has sent a photo with a caption
+    if update.message.photo:
+        caption = update.message.caption if update.message.caption else ""
+        identifier = generate_identifier()
+        user_questions[update.effective_user.id] = {'category': selected_category, 'question': caption, 'identifier': identifier}
+        group_id = {
+            'educational': EDUCATIONAL_GROUP_ID,
+            'spiritual': SPIRITUAL_GROUP_ID,
+            'social': SOCIAL_GROUP_ID,
+        }[selected_category]
+        photo_id = update.message.photo[-1].file_id
+        await context.bot.send_photo(chat_id=group_id, photo=photo_id, caption=f"**Question ID: {identifier}**\nQuestion from {update.effective_user.username}: {caption}")
+        await update.message.reply_text("Your question has been sent to the group. You will receive a reply soon.")
+    else:
+        question = ' '.join(context.args) if context.args else ""
+        if not question:
+            await update.message.reply_text("Please ask a question after typing /ask or send a photo with a caption.")
+            return
+
+        # Generate a unique identifier
+        identifier = generate_identifier()
+
+        # Store the user question with their ID and identifier
+        user_questions[update.effective_user.id] = {'category': selected_category, 'question': question, 'identifier': identifier}
+
+        group_id = {
+            'educational': EDUCATIONAL_GROUP_ID,
+            'spiritual': SPIRITUAL_GROUP_ID,
+            'social': SOCIAL_GROUP_ID,
+        }[selected_category]
+
+        await context.bot.send_message(chat_id=group_id, text=f"**Question ID: {identifier}**\nQuestion from {update.effective_user.username}: {question}")
+        await update.message.reply_text("Your question has been sent to the group. You will receive a reply soon.")
+
+# Handle messages coming from the group
+async def handle_group_message(update: Update, context: CallbackContext) -> None:
+    # Check if the message is a reply to another message
+    if update.message.reply_to_message:
+        reply_message = update.message.reply_to_message
+        original_message = reply_message.caption if reply_message.caption else reply_message.text if reply_message.text else ""
+
+        # Check if the bot is mentioned
+        if BOT_USERNAME not in (update.message.text or update.message.caption or ""):
+            return  # Do nothing if the bot is not mentioned
+
+        # Debug: Log the original message and extracted identifier
+        print(f"Original message: {original_message}")
+
+        if 'Question ID:' in original_message:
+            try:
+                # Extract the Question ID
+                identifier_part = original_message.split('Question ID:')[1].split('\n')[0].strip()
+                identifier = identifier_part.split('**')[0].strip()  # Handle trailing ** or any other extra characters
+
+                # Debug: Log the extracted identifier
+                print(f"Extracted identifier: {identifier}")
+
+                # Find the user ID associated with this identifier
+                user_id = None
+                for uid, info in user_questions.items():
+                    if info['identifier'] == identifier:
+                        user_id = uid
+                        break
+
+                if user_id:
+                    # Check if the reply is a photo or text
+                    if update.message.photo:
+                        # If the reply is a photo, forward the photo to the user who asked the question
+                        photo_id = update.message.photo[-1].file_id
+                        caption = update.message.caption if update.message.caption else f"Answer from EmaHoy-Yelebe for Question ID: {identifier}"
+                        await context.bot.send_photo(chat_id=user_id, photo=photo_id, caption=caption)
+                    else:
+                        # If the reply is text, forward the cleaned response to the user who asked the question
+                        response = update.message.text if update.message.text else ""
+
+                        # Clean the response to remove the Question ID and any other unwanted information
+                        response_lines = response.split('\n')
+                        response_cleaned = '\n'.join(line for line in response_lines if 'Question ID:' not in line).strip()
+
+                        # Send the cleaned response to the user who asked the question
+                        await context.bot.send_message(chat_id=user_id, text=f"Answer from EmaHoy-Yelebe: {response_cleaned}")
+
+                    # Optionally, send a confirmation message back to the group
+                    await context.bot.send_message(chat_id=update.message.chat.id, text=f"Response to Question ID {identifier} has been sent to {update.message.from_user.username}.")
+
+                    # Remove the question from the user_questions dictionary
+                    del user_questions[user_id]
+                else:
+                    await context.bot.send_message(chat_id=update.message.chat.id, text="Error: Unable to find the question with that identifier.")
+            except Exception as e:
+                await context.bot.send_message(chat_id=update.message.chat.id, text=f"Error processing your response: {str(e)}")
+        else:
+            # If it's not a reply to a question, handle it as a new question or general message
+            await context.bot.send_message(chat_id=update.message.chat.id, text="Error: Invalid message format. Please reply to the question message.")
+    elif update.message.photo:
+        # Check if the bot is mentioned in the caption
+        if BOT_USERNAME in (update.message.caption or ""):
+            # Handle the photo as a new question or selection if the bot is mentioned
+            await handle_selection(update, context)
+    elif update.message.text:
+        # Check if the bot is mentioned
+        if BOT_USERNAME in update.message.text:
+            # Handle the message as a new question or selection if the bot is mentioned
+            await handle_selection(update, context)
+
+
+
+if __name__ == '__main__':
+    # Create the Application and pass it your bot's token
+    app = Application.builder().token(TOKEN).build()
+
+    # Register command handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help))
+    app.add_handler(CommandHandler("ask", ask))
+
+    # Register handlers for group messages and photo messages
+    app.add_handler(MessageHandler(filters.REPLY & filters.ChatType.GROUPS, handle_group_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_selection))
+    app.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, ask))  # To handle photos sent with /ask
+
+    # Start the Bot
+    app.run_polling()
