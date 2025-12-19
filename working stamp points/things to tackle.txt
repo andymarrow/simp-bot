@@ -1,4 +1,0 @@
- 1.the bot shouldnt answer in a group chat if its not called ///for the reply it works its for the normal thing that it doesnt work
- 2.the bot in the group chat should keep sendig answers to the user as long as the message is being replied to that text ///already done
- 3. the group leader should be able to send images too  ///already done 
- 4. make the file catagorized ////already done
