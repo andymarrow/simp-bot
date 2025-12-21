@@ -101,22 +101,23 @@ def get_question_mapping(identifier):
 async def start(update: Update, context: CallbackContext) -> None:
     context.user_data.clear()
     user = update.message.from_user
-    user_username = user.username
+    user_username = user.username if user.username else str(user.id)
     
     # --- RESTORED AUTHORIZATION LOGIC (Commented out as requested) ---
     # user_ref = firebase_db.reference('users')
     # user_data = user_ref.order_by_child('telegram_username').equal_to(f"@{user_username}").get()
-    
     # if not user_data:
     #     await update.message.reply_text("You are not allowed to use this bot.")
     #     return
     # --------------------------------------------------------------
 
     if user_username:
+        # We lowercase the key for consistency, but save the display username as a field
         anon_id = generate_anonymous_id(user.id)
-        firebase_db.reference('users').child(user_username).update({
+        firebase_db.reference('users').child(user_username.lower()).update({
             "telegram_id": user.id,
-            "anonymous_id": anon_id
+            "anonymous_id": anon_id,
+            "telegram_username": user_username # This ensures /whois finds the name
         })
 
     admin_ref = firebase_db.reference('admins')
@@ -132,7 +133,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         options = [
             [InlineKeyboardButton("❓ ጥያቄ/ምክር", callback_data='questions')],
             [InlineKeyboardButton("🌐 ቋንቋ", callback_data='language')],
-            [InlineKeyboardButton("👥 ስለ እኛ", callback_data='about')],   
+            [InlineKeyboardButton("👥 ስለ እኛ", callback_data='about')],
             [InlineKeyboardButton("🆘 የእርዳታ ጠቅላላ መድረክ", callback_data='help')],
         ]
         manage_admins_label = "⚙️ አስተዳዳሪዎችን አስተዳድር"
@@ -147,7 +148,7 @@ async def start(update: Update, context: CallbackContext) -> None:
         ]
         manage_admins_label = "⚙️ Manage Admins"
         manage_users_label = "⚙️ Manage Users"
-    
+
     if is_super_admin:
         options.append([InlineKeyboardButton(manage_users_label, callback_data='manage_Users')])
         options.append([InlineKeyboardButton(manage_admins_label, callback_data='manage_Admins')])
@@ -156,7 +157,6 @@ async def start(update: Update, context: CallbackContext) -> None:
 
     reply_markup = InlineKeyboardMarkup(options)
     await update.message.reply_text(message, reply_markup=reply_markup)
-
 
 # Callback query handler for back button
 async def handle_back_button(update: Update, context: CallbackContext) -> None:
@@ -404,6 +404,8 @@ async def handle_selection(update: Update, context: CallbackContext) -> None:
 async def ask(update: Update, context: CallbackContext) -> None:
     selected_category = context.user_data.get('selected')
     user = update.effective_user
+    user_username = user.username if user.username else str(user.id)
+    
     lang_manager = LanguageManager()
     user_language = lang_manager.get_user_language(user.username)
 
@@ -415,6 +417,13 @@ async def ask(update: Update, context: CallbackContext) -> None:
     identifier = generate_identifier()
     anon_id = generate_anonymous_id(user.id)
     save_active_question(identifier, user.id, anon_id, selected_category)
+
+    # Silent Auto-Registration check: Ensure user is in DB when they ask
+    firebase_db.reference('users').child(user_username.lower()).update({
+        "telegram_id": user.id,
+        "anonymous_id": anon_id,
+        "telegram_username": user_username
+    })
 
     group_id = {
         'educational': EDUCATIONAL_GROUP_ID,
@@ -429,17 +438,17 @@ async def ask(update: Update, context: CallbackContext) -> None:
         return
 
     forward_header = (
-        f"📩 **New Inquiry**\n"
-        f"**Question ID:** `{identifier}`\n"
-        f"**From Student:** `{anon_id}`\n"
-        f"**Category:** {selected_category.capitalize()}\n"
+        f"📩 New Inquiry\n"
+        f"Question ID: {identifier}\n"
+        f"From Student: {anon_id}\n"
+        f"Category: {selected_category.capitalize()}\n"
         f"--------------------------\n"
     )
 
     if update.message.photo:
-        await context.bot.send_photo(chat_id=group_id, photo=update.message.photo[-1].file_id, caption=f"{forward_header}**Question:** {question_text}", parse_mode='Markdown')
+        await context.bot.send_photo(chat_id=group_id, photo=update.message.photo[-1].file_id, caption=f"{forward_header}Question: {question_text}", parse_mode='Markdown')
     else:
-        await context.bot.send_message(chat_id=group_id, text=f"{forward_header}**Question:** {question_text}", parse_mode='Markdown')
+        await context.bot.send_message(chat_id=group_id, text=f"{forward_header}Question: {question_text}", parse_mode='Markdown')
 
     await update.message.reply_text("ጥያቄዎ ተልኳል! / Your question has been sent.")
 
@@ -516,15 +525,40 @@ async def whois(update: Update, context: CallbackContext) -> None:
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: `/whois STU-XXXX`")
+        await update.message.reply_text("Usage: /whois STU-XXXX")
         return
 
     target_id = context.args[0].upper()
     users_ref = firebase_db.reference('users').get()
-    found_user = next((data for uname, data in users_ref.items() if data.get('anonymous_id') == target_id), None)
+
+    if not users_ref:
+        await update.message.reply_text("❌ No users found in database.")
+        return
+
+    found_user = None
+    db_key = None
+    for uname, data in users_ref.items():
+        if data.get('anonymous_id') == target_id:
+            found_user = data
+            db_key = uname
+            break
 
     if found_user:
-        info = f"🔍 **Identity Revealed**\n**ID:** `{target_id}`\n**Name:** {found_user.get('name')}\n**Username:** @{found_user.get('telegram_username')}\n**Phone:** {found_user.get('phone')}\n**Year:** {found_user.get('year')}"
+        # If fields are missing (not registered by Admin), show "Not Provided" instead of "None"
+        name = found_user.get('name', 'Not Provided')
+        # If telegram_username field is missing, fallback to the database key
+        username = found_user.get('telegram_username', db_key)
+        phone = found_user.get('phone', 'Not Provided')
+        year = found_user.get('year', 'Not Provided')
+
+        info = (
+            f"🔍 Identity Revealed\n"
+            f"ID: {target_id}\n"
+            f"Name: {name}\n"
+            f"Username: @{username}\n"
+            f"Phone: {phone}\n"
+            f"Year: {year}"
+        )
         await update.message.reply_text(info, parse_mode='Markdown')
     else:
-        await update.message.reply_text("❌ No user found.")
+        await update.message.reply_text(f"❌ No user found with ID {target_id}.")
